@@ -1,0 +1,23 @@
+# Python built files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyInstaller build outputs
+build/
+dist/
+*.spec
+
+# Temporary and backup files created by the rebuilder
+*.tmp
+*.bak
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# OS metadata
+.DS_Store
+Thumbs.db
