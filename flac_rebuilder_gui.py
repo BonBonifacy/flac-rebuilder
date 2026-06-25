@@ -154,11 +154,13 @@ class RebuildThread(QThread):
     # 定义信号：(标识key, 状态, 校验码1, 校验码2, 对比结果/错误说明)
     file_processed = pyqtSignal(str, str, str, str, str)
     finished_all = pyqtSignal(int, int)
+    confirm_request = pyqtSignal(str, int, int)
 
     def __init__(self, paths, mode="rebuild"):
         super().__init__()
         self.paths = paths
         self.mode = mode
+        self.confirm_result = None
 
     def run(self):
         flac_files = []
@@ -246,8 +248,31 @@ class RebuildThread(QThread):
                         new_audio.tags[k] = v
                     for pic in pics:
                         new_audio.add_picture(pic)
-                    # 写入 0 填充以最小化体积
                     new_audio.save(padding=lambda info: 0)
+                    
+                    # 5.5 检测文件大小变动是否异常
+                    size_before = os.path.getsize(filepath)
+                    size_after = os.path.getsize(temp_path)
+                    if size_before > 0:
+                        ratio = size_after / size_before
+                        if ratio < 0.75 or ratio > 1.15:
+                            raise ValueError(
+                                f"文件体积异常变化！处理后大小为原文件的 {ratio:.1%} "
+                                f"(原: {size_before/1024/1024:.2f}MB, 新: {size_after/1024/1024:.2f}MB)"
+                            )
+                    
+                    # 5.6 检测文件大小变动是否超过 10MB，如果是，发射信号请求确认并阻塞等待
+                    diff_bytes = abs(size_before - size_after)
+                    if diff_bytes > 10 * 1024 * 1024:
+                        self.confirm_result = None
+                        self.confirm_request.emit(filepath, size_before, size_after)
+                        while self.confirm_result is None:
+                            self.msleep(100)
+                        
+                        user_approved = self.confirm_result
+                        self.confirm_result = None  # 复位
+                        if not user_approved:
+                            raise ValueError(f"大小变化超过 10MB，用户已取消应用此更改 (变动量: {diff_bytes/1024/1024:.2f}MB)。")
                     
                     # 6. 计算处理后 pcm md5
                     new_data, _ = sf.read(temp_path, dtype=read_dtype)
@@ -596,6 +621,7 @@ class MainWindow(QMainWindow):
         self.thread = RebuildThread(selected_paths, "log_process")
         self.thread.file_processed.connect(self.update_file_status)
         self.thread.finished_all.connect(self.on_finished_all)
+        self.thread.confirm_request.connect(self.handle_confirm_request)
         self.thread.start()
 
     def on_files_dropped(self, paths):
@@ -622,7 +648,23 @@ class MainWindow(QMainWindow):
         self.thread = RebuildThread(paths, mode)
         self.thread.file_processed.connect(self.update_file_status)
         self.thread.finished_all.connect(self.on_finished_all)
+        self.thread.confirm_request.connect(self.handle_confirm_request)
         self.thread.start()
+
+    def handle_confirm_request(self, filepath, size_before, size_after):
+        diff_mb = abs(size_before - size_after) / (1024 * 1024)
+        filename = os.path.basename(filepath)
+        reply = QMessageBox.question(
+            self, "文件大小变动警告",
+            f"音频文件 '{filename}' 重构后大小变动了 {diff_mb:.2f} MB。\n"
+            f"  - 处理前大小: {size_before/1024/1024:.2f} MB\n"
+            f"  - 处理后大小: {size_after/1024/1024:.2f} MB\n\n"
+            f"是否确认应用此更改并覆盖原文件？\n(选择‘否’将撤销修改并回滚)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if self.thread:
+            self.thread.confirm_result = (reply == QMessageBox.StandardButton.Yes)
 
     def update_file_status(self, filename, status, pcm_before, pcm_after, error_msg):
         # 这里的 filename 即文件绝对路径 ui_key

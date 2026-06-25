@@ -100,6 +100,29 @@ def process_file(filepath, mode="rebuild"):
             new_audio.add_picture(pic)
         new_audio.save()
         
+        # 5.5 检测文件大小变动是否异常
+        size_before = os.path.getsize(filepath)
+        size_after = os.path.getsize(temp_path)
+        if size_before > 0:
+            ratio = size_after / size_before
+            if ratio < 0.75 or ratio > 1.15:
+                raise ValueError(
+                    f"文件体积异常变化！处理后大小为原文件的 {ratio:.1%} "
+                    f"(原: {size_before/1024/1024:.2f}MB, 新: {size_after/1024/1024:.2f}MB)"
+                )
+        
+        # 5.6 检测文件体积变化是否超过 10MB
+        diff_bytes = abs(size_before - size_after)
+        if diff_bytes > 10 * 1024 * 1024:
+            print(f"\n[⚠️ 警告] 文件 '{filename}' 处理前后大小变化超过 10MB！")
+            print(f"  - 处理前大小: {size_before/1024/1024:.2f} MB")
+            print(f"  - 处理后大小: {size_after/1024/1024:.2f} MB")
+            print(f"  - 变化差值: {diff_bytes/1024/1024:.2f} MB")
+            
+            confirm = input("  是否确认应用此更改？[y/N]: ").strip().lower()
+            if confirm != 'y':
+                raise ValueError(f"大小变化超过 10MB，用户已取消应用此更改 (变动量: {diff_bytes/1024/1024:.2f}MB)。")
+        
         # 6. 计算并校验处理后 PCM MD5
         pcm_md5_after = get_pcm_md5(temp_path, original_subtype)
         print(f"  - 处理后 PCM MD5: {pcm_md5_after}")
