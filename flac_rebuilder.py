@@ -40,15 +40,31 @@ def get_pcm_md5(filepath, subtype=None):
         
     return hashlib.md5(raw_bytes).hexdigest().upper()
 
-def process_file(filepath):
+def process_file(filepath, mode="rebuild"):
     filename = os.path.basename(filepath)
     print("=" * 60)
-    print(f"正在处理: {filename}")
     
     ext = os.path.splitext(filepath)[1].lower()
     if ext != '.flac':
+        print(f"正在处理: {filename}")
         print("  [跳过] 本程序仅支持处理 .flac 格式文件。")
         return False
+        
+    if mode == "hash_only":
+        print(f"正在计算 PCM MD5: {filename}")
+        try:
+            info = sf.info(filepath)
+            original_subtype = info.subtype
+            original_samplerate = info.samplerate
+            pcm_md5 = get_pcm_md5(filepath, original_subtype)
+            print(f"  - 真实 PCM MD5: {pcm_md5}")
+            print(f"  - 采样率/位深: {original_samplerate}Hz / {original_subtype}")
+            return True
+        except Exception as e:
+            print(f"  - [错误] 计算失败: {e}")
+            return False
+            
+    print(f"正在处理: {filename}")
         
     temp_path = filepath + ".tmp"
     backup_path = filepath + ".bak"
@@ -124,6 +140,31 @@ def main():
         input()
         return
 
+    # 检测是否包含 --only-hash 参数
+    mode = "rebuild"
+    cleaned_file_list = []
+    for item in file_list:
+        val = item.strip('"').strip("'")
+        if val in ["--only-hash", "--hash-only"]:
+            mode = "hash_only"
+        else:
+            cleaned_file_list.append(item)
+            
+    file_list = cleaned_file_list
+
+    if mode == "rebuild":
+        print("请选择工作模式：")
+        print(" [1] 重写清理音频流并优化定位表 (写入文件，默认)")
+        print(" [2] 仅计算音频真实 PCM MD5 校验码 (只读测试，不修改文件)")
+        choice = input("请输入选项数字 [1/2] (默认 1): ").strip()
+        if choice == "2":
+            mode = "hash_only"
+
+    if mode == "hash_only":
+        print("\n--- 当前运行于 [仅计算真实 PCM MD5 (只读模式)] ---")
+    else:
+        print("\n--- 当前运行于 [重构音频流与清理标签 (写入模式)] ---")
+
     print(f"共检测到 {len(file_list)} 个拖入的文件，开始处理...\n")
     
     success_count = 0
@@ -136,12 +177,12 @@ def main():
             for root, _, files in os.walk(filepath):
                 for file in files:
                     if file.lower().endswith('.flac'):
-                        if process_file(os.path.join(root, file)):
+                        if process_file(os.path.join(root, file), mode):
                             success_count += 1
                         else:
                             fail_count += 1
         else:
-            if process_file(filepath):
+            if process_file(filepath, mode):
                 success_count += 1
             else:
                 fail_count += 1

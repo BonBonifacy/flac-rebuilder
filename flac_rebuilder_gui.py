@@ -16,7 +16,8 @@ import soundfile as sf
 from mutagen.flac import FLAC
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QAbstractItemView, QHBoxLayout, QPushButton, QMessageBox)
+                             QAbstractItemView, QHBoxLayout, QPushButton, QMessageBox,
+                             QRadioButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QFont
 
@@ -91,6 +92,25 @@ QPushButton#ClearBtn {
 QPushButton#ClearBtn:hover {
     background-color: #4E545C;
 }
+QRadioButton {
+    color: #EEEEEE;
+    font-size: 13px;
+    font-weight: 500;
+    spacing: 8px;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 2px solid #393E46;
+}
+QRadioButton::indicator:checked {
+    background-color: #00ADB5;
+    border: 2px solid #00ADB5;
+}
+QRadioButton::indicator:hover {
+    border: 2px solid #00ADB5;
+}
 """
 
 class RebuildThread(QThread):
@@ -98,9 +118,10 @@ class RebuildThread(QThread):
     file_processed = pyqtSignal(str, str, str, str, str)
     finished_all = pyqtSignal(int, int)
 
-    def __init__(self, paths):
+    def __init__(self, paths, mode="rebuild"):
         super().__init__()
         self.paths = paths
+        self.mode = mode
 
     def run(self):
         flac_files = []
@@ -119,77 +140,100 @@ class RebuildThread(QThread):
 
         for filepath in flac_files:
             filename = os.path.basename(filepath)
-            self.file_processed.emit(filename, "处理中...", "-", "-", "")
             
-            temp_path = filepath + ".tmp"
-            backup_path = filepath + ".bak"
-            
-            try:
-                # 1. 备份
-                shutil.copy2(filepath, backup_path)
+            if self.mode == "hash_only":
+                self.file_processed.emit(filename, "计算中...", "-", "-", "")
+                try:
+                    info = sf.info(filepath)
+                    original_subtype = info.subtype
+                    original_samplerate = info.samplerate
+                    read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
+                    
+                    data, samplerate = sf.read(filepath, dtype=read_dtype)
+                    if original_subtype == 'PCM_24':
+                        flat_data = (data >> 8).flatten()
+                        arr_u8 = np.frombuffer(flat_data.tobytes(), dtype=np.uint8).reshape(-1, 4)
+                        pcm_bytes = arr_u8[:, :3].tobytes()
+                    else:
+                        pcm_bytes = data.tobytes()
+                    pcm_md5 = hashlib.md5(pcm_bytes).hexdigest().upper()
+                    
+                    success_count += 1
+                    self.file_processed.emit(filename, "已计算", pcm_md5, f"{original_samplerate}Hz / {original_subtype}", "")
+                except Exception as e:
+                    fail_count += 1
+                    self.file_processed.emit(filename, "失败", "-", "-", str(e))
+            else:
+                self.file_processed.emit(filename, "处理中...", "-", "-", "")
+                temp_path = filepath + ".tmp"
+                backup_path = filepath + ".bak"
                 
-                # 2. 读取原始元数据与封面
-                audio = FLAC(filepath)
-                tags = dict(audio.tags)
-                pics = list(audio.pictures)
-                
-                # 3. 计算处理前真实 PCM MD5
-                info = sf.info(filepath)
-                original_subtype = info.subtype
-                original_samplerate = info.samplerate
-                read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
-                
-                data, samplerate = sf.read(filepath, dtype=read_dtype)
-                if original_subtype == 'PCM_24':
-                    flat_data = (data >> 8).flatten()
-                    arr_u8 = np.frombuffer(flat_data.tobytes(), dtype=np.uint8).reshape(-1, 4)
-                    pcm_bytes = arr_u8[:, :3].tobytes()
-                else:
-                    pcm_bytes = data.tobytes()
-                pcm_md5_before = hashlib.md5(pcm_bytes).hexdigest().upper()
-                
-                # 4. 重新编码流
-                sf.write(temp_path, data, samplerate, format='FLAC', subtype=original_subtype)
-                
-                # 5. 还原元数据与封面
-                new_audio = FLAC(temp_path)
-                new_audio.tags.clear()
-                for k, v in tags.items():
-                    new_audio.tags[k] = v
-                for pic in pics:
-                    new_audio.add_picture(pic)
-                # 写入 0 填充以最小化体积，且由于 mutagen 写入，标签天然位于文件头部（优化布局完成）
-                new_audio.save(padding=lambda info: 0)
-                
-                # 6. 计算处理后 pcm md5
-                new_data, _ = sf.read(temp_path, dtype=read_dtype)
-                if original_subtype == 'PCM_24':
-                    flat_new = (new_data >> 8).flatten()
-                    arr_u8_new = np.frombuffer(flat_new.tobytes(), dtype=np.uint8).reshape(-1, 4)
-                    new_pcm_bytes = arr_u8_new[:, :3].tobytes()
-                else:
-                    new_pcm_bytes = new_data.tobytes()
-                pcm_md5_after = hashlib.md5(new_pcm_bytes).hexdigest().upper()
-                
-                if pcm_md5_before != pcm_md5_after:
-                    raise ValueError(f"PCM MD5 改变！原: {pcm_md5_before}, 新: {pcm_md5_after}")
-                
-                # 7. 替换原文件
-                shutil.move(temp_path, filepath)
-                if os.path.exists(backup_path):
-                    os.remove(backup_path)
-                
-                success_count += 1
-                self.file_processed.emit(filename, "修复成功", pcm_md5_before, pcm_md5_after, "")
-                
-            except Exception as e:
-                fail_count += 1
-                # 恢复备份
-                if os.path.exists(backup_path):
-                    shutil.move(backup_path, filepath)
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                self.file_processed.emit(filename, "失败", "-", "-", str(e))
+                try:
+                    # 1. 备份
+                    shutil.copy2(filepath, backup_path)
+                    
+                    # 2. 读取原始元数据与封面
+                    audio = FLAC(filepath)
+                    tags = dict(audio.tags)
+                    pics = list(audio.pictures)
+                    
+                    # 3. 计算处理前真实 PCM MD5
+                    info = sf.info(filepath)
+                    original_subtype = info.subtype
+                    original_samplerate = info.samplerate
+                    read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
+                    
+                    data, samplerate = sf.read(filepath, dtype=read_dtype)
+                    if original_subtype == 'PCM_24':
+                        flat_data = (data >> 8).flatten()
+                        arr_u8 = np.frombuffer(flat_data.tobytes(), dtype=np.uint8).reshape(-1, 4)
+                        pcm_bytes = arr_u8[:, :3].tobytes()
+                    else:
+                        pcm_bytes = data.tobytes()
+                    pcm_md5_before = hashlib.md5(pcm_bytes).hexdigest().upper()
+                    
+                    # 4. 重新编码流
+                    sf.write(temp_path, data, samplerate, format='FLAC', subtype=original_subtype)
+                    
+                    # 5. 还原元数据与封面
+                    new_audio = FLAC(temp_path)
+                    new_audio.tags.clear()
+                    for k, v in tags.items():
+                        new_audio.tags[k] = v
+                    for pic in pics:
+                        new_audio.add_picture(pic)
+                    # 写入 0 填充以最小化体积，且由于 mutagen 写入，标签天然位于文件头部（优化布局完成）
+                    new_audio.save(padding=lambda info: 0)
+                    
+                    # 6. 计算处理后 pcm md5
+                    new_data, _ = sf.read(temp_path, dtype=read_dtype)
+                    if original_subtype == 'PCM_24':
+                        flat_new = (new_data >> 8).flatten()
+                        arr_u8_new = np.frombuffer(flat_new.tobytes(), dtype=np.uint8).reshape(-1, 4)
+                        new_pcm_bytes = arr_u8_new[:, :3].tobytes()
+                    else:
+                        new_pcm_bytes = new_data.tobytes()
+                    pcm_md5_after = hashlib.md5(new_pcm_bytes).hexdigest().upper()
+                    
+                    if pcm_md5_before != pcm_md5_after:
+                        raise ValueError(f"PCM MD5 改变！原: {pcm_md5_before}, 新: {pcm_md5_after}")
+                    
+                    # 7. 替换原文件
+                    shutil.move(temp_path, filepath)
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                    
+                    success_count += 1
+                    self.file_processed.emit(filename, "修复成功", pcm_md5_before, pcm_md5_after, "")
+                    
+                except Exception as e:
+                    fail_count += 1
+                    # 恢复备份
+                    if os.path.exists(backup_path):
+                        shutil.move(backup_path, filepath)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    self.file_processed.emit(filename, "失败", "-", "-", str(e))
 
         self.finished_all.emit(success_count, fail_count)
 
@@ -253,6 +297,24 @@ class MainWindow(QMainWindow):
         title_layout.addWidget(self.clear_btn)
         
         layout.addLayout(title_layout)
+
+        # 模式选择布局
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("工作模式：")
+        mode_label.setStyleSheet("color: #00ADB5; font-weight: bold; font-size: 13px;")
+        
+        self.rebuild_radio = QRadioButton("重构清理音频 (优化定位表、写入文件)")
+        self.rebuild_radio.setChecked(True)
+        self.hash_radio = QRadioButton("仅计算真实 PCM MD5 (只读测试、不修改文件)")
+        
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(self.rebuild_radio)
+        mode_layout.addWidget(self.hash_radio)
+        mode_layout.addStretch()
+        
+        layout.addLayout(mode_layout)
+        
+        self.rebuild_radio.toggled.connect(self.on_mode_changed)
         
         self.drop_area = DropArea()
         self.drop_area.setFixedHeight(120)
@@ -277,6 +339,12 @@ class MainWindow(QMainWindow):
         self.thread = None
         self.file_row_map = {}
 
+    def on_mode_changed(self):
+        if self.rebuild_radio.isChecked():
+            self.table.setHorizontalHeaderLabels(["音乐文件名", "状态", "处理前 PCM MD5", "处理后 PCM MD5", "详情/失败原因"])
+        else:
+            self.table.setHorizontalHeaderLabels(["音乐文件名", "状态", "真实 PCM MD5", "采样率/位深", "详情/失败原因"])
+
     def clear_table(self):
         self.table.setRowCount(0)
         self.file_row_map.clear()
@@ -286,11 +354,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "当前有任务正在运行中，请等待其处理完成！")
             return
             
-        self.drop_area.setText("正在执行重构清理中，请稍候...")
+        mode = "rebuild" if self.rebuild_radio.isChecked() else "hash_only"
+        
+        if mode == "hash_only":
+            self.drop_area.setText("正在计算音频 MD5 校验码，请稍候...")
+        else:
+            self.drop_area.setText("正在执行重构清理中，请稍候...")
+            
         self.drop_area.setEnabled(False)
         self.clear_btn.setEnabled(False)
+        self.rebuild_radio.setEnabled(False)
+        self.hash_radio.setEnabled(False)
         
-        self.thread = RebuildThread(paths)
+        self.thread = RebuildThread(paths, mode)
         self.thread.file_processed.connect(self.update_file_status)
         self.thread.finished_all.connect(self.on_finished_all)
         self.thread.start()
@@ -314,17 +390,19 @@ class MainWindow(QMainWindow):
             self.table.item(row, 4).setText(error_msg)
 
         status_item = self.table.item(row, 1)
-        if "成功" in status:
+        if "成功" in status or "已计算" in status:
             status_item.setForeground(QColor("#00FFD1"))
         elif "失败" in status:
             status_item.setForeground(QColor("#FF4C4C"))
             self.table.item(row, 4).setForeground(QColor("#FF4C4C"))
-        elif "处理中" in status:
+        elif "处理中" in status or "计算中" in status:
             status_item.setForeground(QColor("#FFE17D"))
 
     def on_finished_all(self, success, fail):
         self.drop_area.setEnabled(True)
         self.clear_btn.setEnabled(True)
+        self.rebuild_radio.setEnabled(True)
+        self.hash_radio.setEnabled(True)
         self.drop_area.setText("【 将无损 FLAC 文件或文件夹拖放到此处 】")
         QMessageBox.information(self, "提示", f"任务处理完毕！\n成功: {success} 首\n失败: {fail} 首")
 
