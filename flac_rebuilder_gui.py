@@ -11,6 +11,7 @@ import os
 import sys
 import hashlib
 import shutil
+import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -133,12 +134,22 @@ class RebuildThread(QThread):
                 pics = list(audio.pictures)
                 
                 # 3. 计算处理前真实 PCM MD5
-                data, samplerate = sf.read(filepath, dtype='int16')
-                pcm_bytes = data.tobytes()
+                info = sf.info(filepath)
+                original_subtype = info.subtype
+                original_samplerate = info.samplerate
+                read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
+                
+                data, samplerate = sf.read(filepath, dtype=read_dtype)
+                if original_subtype == 'PCM_24':
+                    flat_data = (data >> 8).flatten()
+                    arr_u8 = np.frombuffer(flat_data.tobytes(), dtype=np.uint8).reshape(-1, 4)
+                    pcm_bytes = arr_u8[:, :3].tobytes()
+                else:
+                    pcm_bytes = data.tobytes()
                 pcm_md5_before = hashlib.md5(pcm_bytes).hexdigest().upper()
                 
                 # 4. 重新编码流
-                sf.write(temp_path, data, samplerate, format='FLAC')
+                sf.write(temp_path, data, samplerate, format='FLAC', subtype=original_subtype)
                 
                 # 5. 还原元数据与封面
                 new_audio = FLAC(temp_path)
@@ -151,8 +162,14 @@ class RebuildThread(QThread):
                 new_audio.save(padding=lambda info: 0)
                 
                 # 6. 计算处理后 pcm md5
-                new_data, _ = sf.read(temp_path, dtype='int16')
-                pcm_md5_after = hashlib.md5(new_data.tobytes()).hexdigest().upper()
+                new_data, _ = sf.read(temp_path, dtype=read_dtype)
+                if original_subtype == 'PCM_24':
+                    flat_new = (new_data >> 8).flatten()
+                    arr_u8_new = np.frombuffer(flat_new.tobytes(), dtype=np.uint8).reshape(-1, 4)
+                    new_pcm_bytes = arr_u8_new[:, :3].tobytes()
+                else:
+                    new_pcm_bytes = new_data.tobytes()
+                pcm_md5_after = hashlib.md5(new_pcm_bytes).hexdigest().upper()
                 
                 if pcm_md5_before != pcm_md5_after:
                     raise ValueError(f"PCM MD5 改变！原: {pcm_md5_before}, 新: {pcm_md5_after}")

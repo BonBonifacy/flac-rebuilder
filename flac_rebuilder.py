@@ -11,6 +11,7 @@ import os
 import sys
 import hashlib
 import shutil
+import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
 
@@ -18,10 +19,26 @@ from mutagen.flac import FLAC
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-def get_pcm_md5(filepath):
-    """解码 FLAC 并计算 PCM 数据 MD5"""
-    data, _ = sf.read(filepath, dtype='int16')
-    return hashlib.md5(data.tobytes()).hexdigest().upper()
+def get_pcm_md5(filepath, subtype=None):
+    """解码 FLAC 并计算与 foobar2000 一致的 PCM 数据 MD5"""
+    if subtype is None:
+        try:
+            subtype = sf.info(filepath).subtype
+        except Exception:
+            subtype = 'PCM_16'
+            
+    dtype = 'int32' if subtype in ['PCM_24', 'PCM_32'] else 'int16'
+    data, _ = sf.read(filepath, dtype=dtype)
+    
+    if subtype == 'PCM_24':
+        # 24-bit 需右移并剔除每个 int32 的最高字节，还原为紧凑的 3 字节小端字节流
+        flat_data = (data >> 8).flatten()
+        arr_u8 = np.frombuffer(flat_data.tobytes(), dtype=np.uint8).reshape(-1, 4)
+        raw_bytes = arr_u8[:, :3].tobytes()
+    else:
+        raw_bytes = data.tobytes()
+        
+    return hashlib.md5(raw_bytes).hexdigest().upper()
 
 def process_file(filepath):
     filename = os.path.basename(filepath)
@@ -46,12 +63,17 @@ def process_file(filepath):
         original_pictures = list(original_audio.pictures)
         
         # 3. 计算处理前真实 PCM MD5
-        pcm_md5_before = get_pcm_md5(filepath)
+        info = sf.info(filepath)
+        original_subtype = info.subtype
+        original_samplerate = info.samplerate
+        
+        pcm_md5_before = get_pcm_md5(filepath, original_subtype)
         print(f"  - 处理前 PCM MD5: {pcm_md5_before}")
         
         # 4. 用 soundfile 重新编码音频流，剔除尾部垃圾
-        data, samplerate = sf.read(filepath, dtype='int16')
-        sf.write(temp_path, data, samplerate, format='FLAC')
+        read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
+        data, samplerate = sf.read(filepath, dtype=read_dtype)
+        sf.write(temp_path, data, samplerate, format='FLAC', subtype=original_subtype)
         
         # 5. 还原元数据和封面
         new_audio = FLAC(temp_path)
@@ -63,7 +85,7 @@ def process_file(filepath):
         new_audio.save()
         
         # 6. 计算并校验处理后 PCM MD5
-        pcm_md5_after = get_pcm_md5(temp_path)
+        pcm_md5_after = get_pcm_md5(temp_path, original_subtype)
         print(f"  - 处理后 PCM MD5: {pcm_md5_after}")
         
         if pcm_md5_before != pcm_md5_after:
