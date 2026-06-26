@@ -113,6 +113,31 @@ QRadioButton::indicator:hover {
 }
 """
 
+def write_size_warning_log(filename, pcm_md5_before, size_before, size_after):
+    """当文件体积发生显著变化或变动超过 2MB 时，写出警告日志"""
+    import datetime
+    log_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
+    log_path = os.path.join(log_dir, "flac_size_warnings.log")
+    time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    diff_mb = abs(size_before - size_after) / (1024 * 1024)
+    ratio = size_after / size_before if size_before > 0 else 1.0
+    
+    log_line = (
+        f"[{time_str}] 警告: 文件体积发生显著变化！\n"
+        f"  - 歌名: {filename}\n"
+        f"  - 处理前 PCM MD5: {pcm_md5_before}\n"
+        f"  - 处理前大小: {size_before/1024/1024:.2f} MB\n"
+        f"  - 处理后大小: {size_after/1024/1024:.2f} MB\n"
+        f"  - 变化差值: {diff_mb:.2f} MB (变化率: {ratio:.1%})\n"
+        f"{'=' * 50}\n"
+    )
+    
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print(f"写入警告日志失败: {e}")
+
 class RebuildThread(QThread):
     # 定义信号：(文件名, 状态, 处理前MD5, 处理后MD5, 错误说明)
     file_processed = pyqtSignal(str, str, str, str, str)
@@ -205,6 +230,16 @@ class RebuildThread(QThread):
                     # 写入 0 填充以最小化体积，且由于 mutagen 写入，标签天然位于文件头部（优化布局完成）
                     new_audio.save(padding=lambda info: 0)
                     
+                    # 5.5 检测文件大小变动是否异常 (比例偏离 25% 以上或绝对大小变化超过 2MB)
+                    size_before = os.path.getsize(filepath)
+                    size_after = os.path.getsize(temp_path)
+                    ratio = size_after / size_before if size_before > 0 else 1.0
+                    diff_bytes = abs(size_before - size_after)
+                    warning_msg = ""
+                    if ratio < 0.75 or ratio > 1.25 or diff_bytes > 2 * 1024 * 1024:
+                        write_size_warning_log(filename, pcm_md5_before, size_before, size_after)
+                        warning_msg = f"[⚠️警告] 体积变化 {(size_after - size_before)/1024/1024:+.2f} MB，已记录日志"
+                    
                     # 6. 计算处理后 pcm md5
                     new_data, _ = sf.read(temp_path, dtype=read_dtype)
                     if original_subtype == 'PCM_24':
@@ -224,7 +259,7 @@ class RebuildThread(QThread):
                         os.remove(backup_path)
                     
                     success_count += 1
-                    self.file_processed.emit(filename, "修复成功", pcm_md5_before, pcm_md5_after, "")
+                    self.file_processed.emit(filename, "修复成功", pcm_md5_before, pcm_md5_after, warning_msg)
                     
                 except Exception as e:
                     fail_count += 1
