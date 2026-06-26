@@ -116,7 +116,10 @@ QRadioButton::indicator:hover {
 def write_size_warning_log(filename, pcm_md5_before, size_before, size_after):
     """当文件体积发生显著变化或变动超过 2MB 时，写出警告日志"""
     import datetime
-    log_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.dirname(sys.executable)
+    else:
+        log_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
     log_path = os.path.join(log_dir, "flac_size_warnings.log")
     time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     diff_mb = abs(size_before - size_after) / (1024 * 1024)
