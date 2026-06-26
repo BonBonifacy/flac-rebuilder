@@ -192,6 +192,35 @@ def check_flac_layout_issues(filepath):
     return reasons
 
 
+def write_size_warning_log(filename, pcm_md5_before, size_before, size_after):
+    """当文件体积发生显著变化或变动超过 2MB 时，写出警告日志"""
+    import datetime
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.dirname(sys.executable)
+    else:
+        log_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
+    log_path = os.path.join(log_dir, "flac_size_warnings.log")
+    time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    diff_mb = abs(size_before - size_after) / (1024 * 1024)
+    ratio = size_after / size_before if size_before > 0 else 1.0
+    
+    log_line = (
+        f"[{time_str}] 警告: 文件体积发生显著变化！\n"
+        f"  - 歌名: {filename}\n"
+        f"  - 处理前 PCM MD5: {pcm_md5_before}\n"
+        f"  - 处理前大小: {size_before/1024/1024:.2f} MB\n"
+        f"  - 处理后大小: {size_after/1024/1024:.2f} MB\n"
+        f"  - 变化差值: {diff_mb:.2f} MB (变化率: {ratio:.1%})\n"
+        f"{'=' * 50}\n"
+    )
+    
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print(f"写入警告日志失败: {e}")
+
+
 class RebuildThread(QThread):
     # 定义信号：(标识key, 状态, 校验码1, 校验码2, 对比结果/错误说明)
     file_processed = pyqtSignal(str, str, str, str, str)
@@ -314,19 +343,17 @@ class RebuildThread(QThread):
                             
                     new_audio.save(padding=lambda info: 0)
                     
-                    # 5.5 检测文件大小变动是否异常
+                    # 5.5 检测文件大小变动是否异常 (比例偏离 25% 以上或绝对大小变化超过 2MB)
                     size_before = os.path.getsize(filepath)
                     size_after = os.path.getsize(temp_path)
-                    if size_before > 0:
-                        ratio = size_after / size_before
-                        if ratio < 0.75 or ratio > 1.15:
-                            raise ValueError(
-                                f"文件体积异常变化！处理后大小为原文件的 {ratio:.1%} "
-                                f"(原: {size_before/1024/1024:.2f}MB, 新: {size_after/1024/1024:.2f}MB)"
-                            )
+                    ratio = size_after / size_before if size_before > 0 else 1.0
+                    diff_bytes = abs(size_before - size_after)
+                    warning_msg = ""
+                    if ratio < 0.75 or ratio > 1.25 or diff_bytes > 2 * 1024 * 1024:
+                        write_size_warning_log(filename, pcm_md5_before, size_before, size_after)
+                        warning_msg = f"[⚠️警告] 体积变化 {(size_after - size_before)/1024/1024:+.2f} MB，已记录日志"
                     
                     # 5.6 检测文件大小变动是否超过 10MB，如果是，发射信号请求确认并阻塞等待
-                    diff_bytes = abs(size_before - size_after)
                     if diff_bytes > 10 * 1024 * 1024:
                         self.confirm_result = None
                         self.confirm_request.emit(filepath, size_before, size_after)
@@ -364,10 +391,12 @@ class RebuildThread(QThread):
                             comparison = "不匹配"
                             
                     success_count += 1
+                    detail_msg = warning_msg
                     if self.mode == "log_process":
-                        self.file_processed.emit(ui_key, "修复成功", pcm_md5_before, foobar_md5, comparison)
+                        detail_msg = f"{comparison}; {warning_msg}".strip("; ")
+                        self.file_processed.emit(ui_key, "修复成功", pcm_md5_before, foobar_md5, detail_msg)
                     else:
-                        self.file_processed.emit(ui_key, "修复成功", pcm_md5_before, pcm_md5_after, "")
+                        self.file_processed.emit(ui_key, "修复成功", pcm_md5_before, pcm_md5_after, detail_msg)
                     
                 except Exception as e:
                     fail_count += 1

@@ -17,7 +17,10 @@ from mutagen.flac import FLAC
 
 # 解决 Windows 命令行中文乱码
 if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 def get_pcm_md5(filepath, subtype=None):
     """解码 FLAC 并计算与 foobar2000 一致的 PCM 数据 MD5"""
@@ -39,6 +42,34 @@ def get_pcm_md5(filepath, subtype=None):
         raw_bytes = data.tobytes()
         
     return hashlib.md5(raw_bytes).hexdigest().upper()
+
+def write_size_warning_log(filename, pcm_md5_before, size_before, size_after):
+    """当文件体积发生显著变化或变动超过 2MB 时，写出警告日志"""
+    import datetime
+    if getattr(sys, 'frozen', False):
+        log_dir = os.path.dirname(sys.executable)
+    else:
+        log_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else "."
+    log_path = os.path.join(log_dir, "flac_size_warnings.log")
+    time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    diff_mb = abs(size_before - size_after) / (1024 * 1024)
+    ratio = size_after / size_before if size_before > 0 else 1.0
+    
+    log_line = (
+        f"[{time_str}] 警告: 文件体积发生显著变化！\n"
+        f"  - 歌名: {filename}\n"
+        f"  - 处理前 PCM MD5: {pcm_md5_before}\n"
+        f"  - 处理前大小: {size_before/1024/1024:.2f} MB\n"
+        f"  - 处理后大小: {size_after/1024/1024:.2f} MB\n"
+        f"  - 变化差值: {diff_mb:.2f} MB (变化率: {ratio:.1%})\n"
+        f"{'=' * 50}\n"
+    )
+    
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(log_line)
+    except Exception as e:
+        print(f"写入警告日志失败: {e}")
 
 def process_file(filepath, mode="rebuild"):
     filename = os.path.basename(filepath)
@@ -113,16 +144,14 @@ def process_file(filepath, mode="rebuild"):
                 
         new_audio.save()
         
-        # 5.5 检测文件大小变动是否异常
+        # 5.5 检测文件大小变动是否异常 (比例偏离 25% 以上或绝对大小变化超过 2MB)
         size_before = os.path.getsize(filepath)
         size_after = os.path.getsize(temp_path)
-        if size_before > 0:
-            ratio = size_after / size_before
-            if ratio < 0.75 or ratio > 1.15:
-                raise ValueError(
-                    f"文件体积异常变化！处理后大小为原文件的 {ratio:.1%} "
-                    f"(原: {size_before/1024/1024:.2f}MB, 新: {size_after/1024/1024:.2f}MB)"
-                )
+        ratio = size_after / size_before if size_before > 0 else 1.0
+        diff_bytes = abs(size_before - size_after)
+        if ratio < 0.75 or ratio > 1.25 or diff_bytes > 2 * 1024 * 1024:
+            write_size_warning_log(filename, pcm_md5_before, size_before, size_after)
+            print(f"  [⚠️ 警告] 检测到文件体积发生显著变化 (原: {size_before/1024/1024:.2f}MB, 新: {size_after/1024/1024:.2f}MB)，已写入警告日志。")
         
         # 5.6 检测文件体积变化是否超过 10MB
         diff_bytes = abs(size_before - size_after)
