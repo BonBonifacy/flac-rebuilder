@@ -89,6 +89,12 @@ def process_file(filepath, mode="rebuild"):
         # 4. 用 soundfile 重新编码音频流，剔除尾部垃圾
         read_dtype = 'int32' if original_subtype in ['PCM_24', 'PCM_32'] else 'int16'
         data, samplerate = sf.read(filepath, dtype=read_dtype)
+        
+        # 调试测试钩子：故意修改特定测试文件的 PCM 数据以验证 MD5 校验及自动回滚机制
+        if "trigger_md5_error" in filename.lower():
+            data = data.copy()
+            data[0] += 1
+            
         sf.write(temp_path, data, samplerate, format='FLAC', subtype=original_subtype)
         
         # 5. 还原元数据和封面
@@ -98,6 +104,13 @@ def process_file(filepath, mode="rebuild"):
             new_audio.tags[k] = v
         for pic in original_pictures:
             new_audio.add_picture(pic)
+            
+        # 保留原文件中的定位表 (SEEKTABLE) 及其他有用元数据块 (如 APPLICATION, CUESHEET 等)
+        extra_blocks = [b for b in original_audio.metadata_blocks if b.code not in (0, 1, 4, 6)]
+        for block in extra_blocks:
+            if not any(b.code == block.code for b in new_audio.metadata_blocks):
+                new_audio.metadata_blocks.append(block)
+                
         new_audio.save()
         
         # 5.5 检测文件大小变动是否异常

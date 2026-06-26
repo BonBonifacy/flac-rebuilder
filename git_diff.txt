@@ -1,0 +1,496 @@
+﻿commit d61015d4337c5626f391fbb08f9f8beeffa4a0b0
+Author: bonbonifacy <93320872+BonBonifacy@users.noreply.github.com>
+Date:   Thu Jun 25 23:03:08 2026 +0800
+
+    feat: add Foobar2000 log import and batch processing support to GUI
+
+diff --git a/flac_rebuilder_gui.py b/flac_rebuilder_gui.py
+index a554f9f..0ee0c9b 100644
+--- a/flac_rebuilder_gui.py
++++ b/flac_rebuilder_gui.py
+@@ -11,13 +11,14 @@ import os
+ import sys
+ import hashlib
+ import shutil
++import re
+ import numpy as np
+ import soundfile as sf
+ from mutagen.flac import FLAC
+ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                              QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
+                              QAbstractItemView, QHBoxLayout, QPushButton, QMessageBox,
+-                             QRadioButton)
++                             QRadioButton, QFileDialog, QCheckBox)
+ from PyQt6.QtCore import Qt, QThread, pyqtSignal
+ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QColor, QFont
+ 
+@@ -92,6 +93,23 @@ QPushButton#ClearBtn {
+ QPushButton#ClearBtn:hover {
+     background-color: #4E545C;
+ }
++QPushButton#PrimaryBtn {
++    background-color: #00ADB5;
++    color: #FFFFFF;
++    border: none;
++    border-radius: 6px;
++    padding: 8px 16px;
++    font-size: 13px;
++    font-weight: bold;
++}
++QPushButton#PrimaryBtn:hover {
++    background-color: #00FFF6;
++    color: #121212;
++}
++QPushButton#PrimaryBtn:disabled {
++    background-color: #2C2C2C;
++    color: #777777;
++}
+ QRadioButton {
+     color: #EEEEEE;
+     font-size: 13px;
+@@ -111,10 +129,29 @@ QRadioButton::indicator:checked {
+ QRadioButton::indicator:hover {
+     border: 2px solid #00ADB5;
+ }
++QCheckBox {
++    color: #EEEEEE;
++    font-size: 13px;
++    spacing: 5px;
++}
++QCheckBox::indicator {
++    width: 16px;
++    height: 16px;
++    border: 2px solid #393E46;
++    border-radius: 4px;
++    background-color: #1E1E1E;
++}
++QCheckBox::indicator:checked {
++    background-color: #00ADB5;
++    border: 2px solid #00ADB5;
++}
++QCheckBox::indicator:hover {
++    border: 2px solid #00ADB5;
++}
+ """
+ 
+ class RebuildThread(QThread):
+-    # 瀹氫箟淇″彿锛?鏂囦欢鍚? 鐘舵€? 澶勭悊鍓峂D5, 澶勭悊鍚嶮D5, 閿欒璇存槑)
++    # 瀹氫箟淇″彿锛?鏍囪瘑key, 鐘舵€? 鏍￠獙鐮?, 鏍￠獙鐮?, 瀵规瘮缁撴灉/閿欒璇存槑)
+     file_processed = pyqtSignal(str, str, str, str, str)
+     finished_all = pyqtSignal(int, int)
+ 
+@@ -125,24 +162,31 @@ class RebuildThread(QThread):
+ 
+     def run(self):
+         flac_files = []
+-        for path in self.paths:
+-            if os.path.isdir(path):
+-                for root, _, files in os.walk(path):
+-                    for file in files:
+-                        if file.lower().endswith('.flac'):
+-                            flac_files.append(os.path.join(root, file))
+-            else:
+-                if path.lower().endswith('.flac'):
+-                    flac_files.append(path)
++        if self.mode == "log_process":
++            # paths 鏄?[{"path": ..., "foobar_md5": ...}]
++            flac_files = self.paths
++        else:
++            for path in self.paths:
++                if os.path.isdir(path):
++                    for root, _, files in os.walk(path):
++                        for file in files:
++                            if file.lower().endswith('.flac'):
++                                flac_files.append({"path": os.path.join(root, file), "foobar_md5": ""})
++                else:
++                    if path.lower().endswith('.flac'):
++                        flac_files.append({"path": path, "foobar_md5": ""})
+ 
+         success_count = 0
+         fail_count = 0
+ 
+-        for filepath in flac_files:
++        for item in flac_files:
++            filepath = item["path"]
++            foobar_md5 = item.get("foobar_md5", "")
+             filename = os.path.basename(filepath)
+-            
++            ui_key = filepath  # 鐢ㄧ粷瀵硅矾寰勪綔涓鸿瘑鍒?UI 琛岀殑鍞竴鏍囪瘑
++
+             if self.mode == "hash_only":
+-                self.file_processed.emit(filename, "璁＄畻涓?..", "-", "-", "")
++                self.file_processed.emit(ui_key, "璁＄畻涓?..", "-", "-", "")
+                 try:
+                     info = sf.info(filepath)
+                     original_subtype = info.subtype
+@@ -159,12 +203,12 @@ class RebuildThread(QThread):
+                     pcm_md5 = hashlib.md5(pcm_bytes).hexdigest().upper()
+                     
+                     success_count += 1
+-                    self.file_processed.emit(filename, "宸茶绠?, pcm_md5, f"{original_samplerate}Hz / {original_subtype}", "")
++                    self.file_processed.emit(ui_key, "宸茶绠?, pcm_md5, f"{original_samplerate}Hz / {original_subtype}", "")
+                 except Exception as e:
+                     fail_count += 1
+-                    self.file_processed.emit(filename, "澶辫触", "-", "-", str(e))
++                    self.file_processed.emit(ui_key, "澶辫触", "-", "-", str(e))
+             else:
+-                self.file_processed.emit(filename, "澶勭悊涓?..", "-", "-", "")
++                self.file_processed.emit(ui_key, "澶勭悊涓?..", "-", "-", "")
+                 temp_path = filepath + ".tmp"
+                 backup_path = filepath + ".bak"
+                 
+@@ -202,7 +246,7 @@ class RebuildThread(QThread):
+                         new_audio.tags[k] = v
+                     for pic in pics:
+                         new_audio.add_picture(pic)
+-                    # 鍐欏叆 0 濉厖浠ユ渶灏忓寲浣撶Н锛屼笖鐢变簬 mutagen 鍐欏叆锛屾爣绛惧ぉ鐒朵綅浜庢枃浠跺ご閮紙浼樺寲甯冨眬瀹屾垚锛?+                    # 鍐欏叆 0 濉厖浠ユ渶灏忓寲浣撶Н
+                     new_audio.save(padding=lambda info: 0)
+                     
+                     # 6. 璁＄畻澶勭悊鍚?pcm md5
+@@ -223,8 +267,18 @@ class RebuildThread(QThread):
+                     if os.path.exists(backup_path):
+                         os.remove(backup_path)
+                     
++                    comparison = ""
++                    if self.mode == "log_process" and foobar_md5:
++                        if pcm_md5_before == foobar_md5:
++                            comparison = "鍖归厤"
++                        else:
++                            comparison = "涓嶅尮閰?
++                            
+                     success_count += 1
+-                    self.file_processed.emit(filename, "淇鎴愬姛", pcm_md5_before, pcm_md5_after, "")
++                    if self.mode == "log_process":
++                        self.file_processed.emit(ui_key, "淇鎴愬姛", pcm_md5_before, foobar_md5, comparison)
++                    else:
++                        self.file_processed.emit(ui_key, "淇鎴愬姛", pcm_md5_before, pcm_md5_after, "")
+                     
+                 except Exception as e:
+                     fail_count += 1
+@@ -233,8 +287,7 @@ class RebuildThread(QThread):
+                         shutil.move(backup_path, filepath)
+                     if os.path.exists(temp_path):
+                         os.remove(temp_path)
+-                    self.file_processed.emit(filename, "澶辫触", "-", "-", str(e))
+-
++                    self.file_processed.emit(ui_key, "澶辫触", "-", "-", str(e))
+         self.finished_all.emit(success_count, fail_count)
+ 
+ class DropArea(QLabel):
+@@ -273,9 +326,12 @@ class MainWindow(QMainWindow):
+     def __init__(self):
+         super().__init__()
+         self.setWindowTitle("FLAC 闊抽娴侀噸鏋勪笌鍨冨溇鏍囩娓呯悊宸ュ叿")
+-        self.resize(900, 650)
++        self.resize(1000, 700)
+         self.setStyleSheet(DARK_STYLE)
+         
++        self.log_mode = False
++        self.log_items = []
++        
+         central_widget = QWidget()
+         central_widget.setObjectName("CentralWidget")
+         self.setCentralWidget(central_widget)
+@@ -315,6 +371,37 @@ class MainWindow(QMainWindow):
+         layout.addLayout(mode_layout)
+         
+         self.rebuild_radio.toggled.connect(self.on_mode_changed)
++
++        # 鏃ュ織鎿嶄綔鏍忓竷灞€
++        action_layout = QHBoxLayout()
++        self.btn_import_log = QPushButton("瀵煎叆 Foobar 鏃ュ織")
++        self.btn_import_log.clicked.connect(self.import_foobar_log)
++        
++        self.btn_select_warning = QPushButton("浠呴€夎鍛婇」")
++        self.btn_select_warning.clicked.connect(self.select_warning_items)
++        self.btn_select_warning.setEnabled(False)
++        
++        self.btn_select_all = QPushButton("鍏ㄩ€?)
++        self.btn_select_all.clicked.connect(lambda: self.set_all_checked(True))
++        self.btn_select_all.setEnabled(False)
++        
++        self.btn_deselect_all = QPushButton("鍏ㄤ笉閫?)
++        self.btn_deselect_all.clicked.connect(lambda: self.set_all_checked(False))
++        self.btn_deselect_all.setEnabled(False)
++        
++        self.btn_rebuild_selected = QPushButton("鎵归噺閲嶆瀯閫変腑椤?)
++        self.btn_rebuild_selected.setObjectName("PrimaryBtn")
++        self.btn_rebuild_selected.clicked.connect(self.rebuild_selected_items)
++        self.btn_rebuild_selected.setEnabled(False)
++        
++        action_layout.addWidget(self.btn_import_log)
++        action_layout.addWidget(self.btn_select_warning)
++        action_layout.addWidget(self.btn_select_all)
++        action_layout.addWidget(self.btn_deselect_all)
++        action_layout.addStretch()
++        action_layout.addWidget(self.btn_rebuild_selected)
++        
++        layout.addLayout(action_layout)
+         
+         self.drop_area = DropArea()
+         self.drop_area.setFixedHeight(120)
+@@ -340,6 +427,8 @@ class MainWindow(QMainWindow):
+         self.file_row_map = {}
+ 
+     def on_mode_changed(self):
++        if self.log_mode:
++            return
+         if self.rebuild_radio.isChecked():
+             self.table.setHorizontalHeaderLabels(["闊充箰鏂囦欢鍚?, "鐘舵€?, "澶勭悊鍓?PCM MD5", "澶勭悊鍚?PCM MD5", "璇︽儏/澶辫触鍘熷洜"])
+         else:
+@@ -348,8 +437,172 @@ class MainWindow(QMainWindow):
+     def clear_table(self):
+         self.table.setRowCount(0)
+         self.file_row_map.clear()
++        self.log_mode = False
++        self.log_items = []
++        
++        # 鎭㈠甯歌妯″紡涓嬬殑琛ㄦ牸鍒楀ご
++        self.table.setColumnCount(5)
++        self.on_mode_changed()
++        self.table.setColumnWidth(0, 240)
++        self.table.setColumnWidth(1, 90)
++        self.table.setColumnWidth(2, 210)
++        self.table.setColumnWidth(3, 210)
++        
++        self.drop_area.setText("銆?灏嗘棤鎹?FLAC 鏂囦欢鎴栨枃浠跺す鎷栨斁鍒版澶?銆?)
++        self.btn_select_warning.setEnabled(False)
++        self.btn_select_all.setEnabled(False)
++        self.btn_deselect_all.setEnabled(False)
++        self.btn_rebuild_selected.setEnabled(False)
++        self.rebuild_radio.setEnabled(True)
++        self.hash_radio.setEnabled(True)
++
++    def import_foobar_log(self):
++        if self.thread and self.thread.isRunning():
++            QMessageBox.warning(self, "璀﹀憡", "褰撳墠鏈変换鍔℃鍦ㄨ繍琛屼腑锛岃绛夊緟鍏跺鐞嗗畬鎴愶紒")
++            return
++            
++        file_path, _ = QFileDialog.getOpenFileName(
++            self, "瀵煎叆 Foobar2000 妫€娴嬫棩蹇?, "", "Text Files (*.txt *.log);;All Files (*)"
++        )
++        if not file_path:
++            return
++            
++        self.log_items = parse_foobar_log(file_path)
++        if not self.log_items:
++            QMessageBox.warning(self, "璀﹀憡", "鏈兘浠庢棩蹇椾腑瑙ｆ瀽鍑烘湁鏁堢殑姝屾洸椤圭洰锛岃妫€鏌ユ枃浠舵牸寮忋€?)
++            return
++            
++        self.log_mode = True
++        self.table.setRowCount(0)
++        self.file_row_map.clear()
++        
++        # 鍒囨崲琛ㄦ牸涓烘棩蹇楀鐞嗗睍绀虹殑 7 鍒?+        self.table.setColumnCount(7)
++        self.table.setHorizontalHeaderLabels([
++            "閫夋嫨", "闊充箰鏂囦欢鍚?, "璀﹀憡绫诲瀷", "Foobar 鏍囨敞 MD5", "璁＄畻 PCM MD5", "鏍￠獙瀵规瘮", "澶勭悊鐘舵€?
++        ])
++        
++        self.table.setColumnWidth(0, 50)
++        self.table.setColumnWidth(1, 220)
++        self.table.setColumnWidth(2, 160)
++        self.table.setColumnWidth(3, 200)
++        self.table.setColumnWidth(4, 200)
++        self.table.setColumnWidth(5, 80)
++        self.table.setColumnWidth(6, 90)
++        
++        for item in self.log_items:
++            row = self.table.rowCount()
++            self.table.insertRow(row)
++            
++            # 浣跨敤鏂囦欢缁濆璺緞浣滀负 file_row_map 鐨?key
++            self.file_row_map[item["path"]] = row
++            
++            # 1. 閫夋嫨 CheckBox
++            chk_box = QCheckBox()
++            # 榛樿鍕鹃€夋湁璀﹀憡椤?+            has_warning = bool(item["warning"])
++            chk_box.setChecked(has_warning)
++            
++            widget = QWidget()
++            h_layout = QHBoxLayout(widget)
++            h_layout.addWidget(chk_box)
++            h_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
++            h_layout.setContentsMargins(0, 0, 0, 0)
++            self.table.setCellWidget(row, 0, widget)
++            
++            # 2. 闊充箰鏂囦欢鍚?+            self.table.setItem(row, 1, QTableWidgetItem(os.path.basename(item["path"])))
++            
++            # 3. 璀﹀憡绫诲瀷
++            warning_text = item["warning"] if item["warning"] else "鏃犳壘鍒伴棶棰?
++            warning_item = QTableWidgetItem(warning_text)
++            if item["warning"]:
++                warning_item.setForeground(QColor("#FFE17D"))
++            else:
++                warning_item.setForeground(QColor("#777777"))
++            self.table.setItem(row, 2, warning_item)
++            
++            # 4. Foobar MD5
++            foobar_md5_item = QTableWidgetItem(item["foobar_md5"] if item["foobar_md5"] else "-")
++            foobar_md5_item.setForeground(QColor("#CCCCCC"))
++            self.table.setItem(row, 3, foobar_md5_item)
++            
++            # 5. 璁＄畻 PCM MD5
++            self.table.setItem(row, 4, QTableWidgetItem("-"))
++            
++            # 6. 鏍￠獙瀵规瘮
++            self.table.setItem(row, 5, QTableWidgetItem("-"))
++            
++            # 7. 澶勭悊鐘舵€?+            self.table.setItem(row, 6, QTableWidgetItem("鏈鐞?))
++            
++        self.drop_area.setText("銆?鏃ュ織宸插姞杞斤細璇蜂娇鐢ㄤ笅鏂规寜閽繘琛屽鐞嗭紝鎴栨竻绌哄垪琛ㄥ垏鎹㈠洖鎷栨斁妯″紡 銆?)
++        self.btn_select_warning.setEnabled(True)
++        self.btn_select_all.setEnabled(True)
++        self.btn_deselect_all.setEnabled(True)
++        self.btn_rebuild_selected.setEnabled(True)
++        self.rebuild_radio.setEnabled(False)
++        self.hash_radio.setEnabled(False)
++        
++        warning_count = sum(1 for x in self.log_items if x['warning'])
++        QMessageBox.information(
++            self, "瀵煎叆鎴愬姛", 
++            f"鎴愬姛浠庢棩蹇椾腑瀵煎叆浜?{len(self.log_items)} 棣栨瓕鏇层€俓n鍏朵腑鏈夎鍛婄殑姝屾洸鍏辫 {warning_count} 棣栵紝宸茶嚜鍔ㄥ嬀閫夈€?
++        )
++
++    def set_all_checked(self, checked):
++        for row in range(self.table.rowCount()):
++            cell_widget = self.table.cellWidget(row, 0)
++            if cell_widget:
++                chk = cell_widget.layout().itemAt(0).widget()
++                chk.setChecked(checked)
++                
++    def select_warning_items(self):
++        for row in range(self.table.rowCount()):
++            warning_text = self.table.item(row, 2).text()
++            cell_widget = self.table.cellWidget(row, 0)
++            if cell_widget:
++                chk = cell_widget.layout().itemAt(0).widget()
++                chk.setChecked(warning_text != "鏃犳壘鍒伴棶棰?)
++
++    def rebuild_selected_items(self):
++        if self.thread and self.thread.isRunning():
++            QMessageBox.warning(self, "璀﹀憡", "褰撳墠鏈変换鍔℃鍦ㄨ繍琛屼腑锛岃绛夊緟鍏跺鐞嗗畬鎴愶紒")
++            return
++            
++        selected_paths = []
++        for row in range(self.table.rowCount()):
++            cell_widget = self.table.cellWidget(row, 0)
++            if cell_widget:
++                chk = cell_widget.layout().itemAt(0).widget()
++                if chk.isChecked():
++                    path = self.log_items[row]["path"]
++                    foobar_md5 = self.log_items[row]["foobar_md5"]
++                    selected_paths.append({"path": path, "foobar_md5": foobar_md5})
++                    
++        if not selected_paths:
++            QMessageBox.warning(self, "璀﹀憡", "璇峰厛閫夋嫨闇€瑕侀噸鏋勭殑鏂囦欢锛?)
++            return
++            
++        self.drop_area.setText("姝ｅ湪鎵ц鍕鹃€夐」鐩噸鏋勬牎楠屼腑锛岃绋嶅€?..")
++        self.drop_area.setEnabled(False)
++        self.clear_btn.setEnabled(False)
++        self.btn_import_log.setEnabled(False)
++        self.btn_select_warning.setEnabled(False)
++        self.btn_select_all.setEnabled(False)
++        self.btn_deselect_all.setEnabled(False)
++        self.btn_rebuild_selected.setEnabled(False)
++        
++        self.thread = RebuildThread(selected_paths, "log_process")
++        self.thread.file_processed.connect(self.update_file_status)
++        self.thread.finished_all.connect(self.on_finished_all)
++        self.thread.start()
+ 
+     def on_files_dropped(self, paths):
++        if self.log_mode:
++            QMessageBox.warning(self, "璀﹀憡", "褰撳墠澶勪簬 Foobar 鏃ュ織妯″紡锛岃鍏堢偣鍑烩€滄竻绌哄垪琛ㄢ€濇仮澶嶅父瑙勬嫋鏀惧鐞嗘ā寮忥紒")
++            return
++            
+         if self.thread and self.thread.isRunning():
+             QMessageBox.warning(self, "璀﹀憡", "褰撳墠鏈変换鍔℃鍦ㄨ繍琛屼腑锛岃绛夊緟鍏跺鐞嗗畬鎴愶紒")
+             return
+@@ -372,38 +625,73 @@ class MainWindow(QMainWindow):
+         self.thread.start()
+ 
+     def update_file_status(self, filename, status, pcm_before, pcm_after, error_msg):
++        # 杩欓噷鐨?filename 鍗虫枃浠剁粷瀵硅矾寰?ui_key
+         if filename not in self.file_row_map:
+             row = self.table.rowCount()
+             self.table.insertRow(row)
+             self.file_row_map[filename] = row
+             
+-            self.table.setItem(row, 0, QTableWidgetItem(filename))
+-            self.table.setItem(row, 1, QTableWidgetItem(status))
+-            self.table.setItem(row, 2, QTableWidgetItem(pcm_before))
+-            self.table.setItem(row, 3, QTableWidgetItem(pcm_after))
+-            self.table.setItem(row, 4, QTableWidgetItem(error_msg))
++            if self.log_mode:
++                self.table.setItem(row, 1, QTableWidgetItem(os.path.basename(filename)))
++                self.table.setItem(row, 6, QTableWidgetItem(status))
++            else:
++                self.table.setItem(row, 0, QTableWidgetItem(os.path.basename(filename)))
++                self.table.setItem(row, 1, QTableWidgetItem(status))
++                self.table.setItem(row, 2, QTableWidgetItem(pcm_before))
++                self.table.setItem(row, 3, QTableWidgetItem(pcm_after))
++                self.table.setItem(row, 4, QTableWidgetItem(error_msg))
+         else:
+             row = self.file_row_map[filename]
+-            self.table.item(row, 1).setText(status)
+-            self.table.item(row, 2).setText(pcm_before)
+-            self.table.item(row, 3).setText(pcm_after)
+-            self.table.item(row, 4).setText(error_msg)
++            if self.log_mode:
++                # 0: 閫夋嫨 (CellWidget)
++                # 1: 闊充箰鏂囦欢鍚?+                # 2: 璀﹀憡绫诲瀷 (宸插～)
++                # 3: Foobar 鏍囨敞 MD5 (宸插～)
++                # 4: 璁＄畻 PCM MD5 (鏇存柊涓鸿绠楀嚭鐨?pcm_before)
++                # 5: 鏍￠獙瀵规瘮 (鏇存柊涓哄姣旂粨鏋?error_msg)
++                # 6: 澶勭悊鐘舵€?(鏇存柊涓虹姸鎬?status)
++                self.table.setItem(row, 4, QTableWidgetItem(pcm_before))
++                
++                comp_item = QTableWidgetItem(error_msg)
++                if "涓嶅尮閰? in error_msg:
++                    comp_item.setForeground(QColor("#FF4C4C"))
++                else:
++                    comp_item.setForeground(QColor("#00FFD1"))
++                self.table.setItem(row, 5, comp_item)
++                
++                self.table.setItem(row, 6, QTableWidgetItem(status))
++            else:
++                self.table.item(row, 1).setText(status)
++                self.table.item(row, 2).setText(pcm_before)
++                self.table.item(row, 3).setText(pcm_after)
++                self.table.item(row, 4).setText(error_msg)
+ 
+-        status_item = self.table.item(row, 1)
++        row = self.file_row_map[filename]
++        status_item = self.table.item(row, 6 if self.log_mode else 1)
+         if "鎴愬姛" in status or "宸茶绠? in status:
+             status_item.setForeground(QColor("#00FFD1"))
+         elif "澶辫触" in status:
+             status_item.setForeground(QColor("#FF4C4C"))
+-            self.table.item(row, 4).setForeground(QColor("#FF4C4C"))
++            self.table.item(row, 4 if not self.log_mode else 5).setForeground(QColor("#FF4C4C"))
+         elif "澶勭悊涓? in status or "璁＄畻涓? in status:
+             status_item.setForeground(QColor("#FFE17D"))
+ 
+     def on_finished_all(self, success, fail):
+         self.drop_area.setEnabled(True)
+         self.clear_btn.setEnabled(True)
+-        self.rebuild_radio.setEnabled(True)
+-        self.hash_radio.setEnabled(True)
+-        self.drop_area.setText("銆?灏嗘棤鎹?FLAC 鏂囦欢鎴栨枃浠跺す鎷栨斁鍒版澶?銆?)
++        self.btn_import_log.setEnabled(True)
++        
++        if self.log_mode:
++            self.btn_select_warning.setEnabled(True)
++            self.btn_select_all.setEnabled(True)
++            self.btn_deselect_all.setEnabled(True)
++            self.btn_rebuild_selected.setEnabled(True)
++            self.drop_area.setText("銆?鏃ュ織宸插姞杞斤細璇蜂娇鐢ㄤ笅鏂规寜閽繘琛屽鐞嗭紝鎴栨竻绌哄垪琛ㄥ垏鎹㈠洖鎷栨斁妯″紡 銆?)
++        else:
++            self.rebuild_radio.setEnabled(True)
++            self.hash_radio.setEnabled(True)
++            self.drop_area.setText("銆?灏嗘棤鎹?FLAC 鏂囦欢鎴栨枃浠跺す鎷栨斁鍒版澶?銆?)
++            
+         QMessageBox.information(self, "鎻愮ず", f"浠诲姟澶勭悊瀹屾瘯锛乗n鎴愬姛: {success} 棣朶n澶辫触: {fail} 棣?)
+ 
+ def main():
